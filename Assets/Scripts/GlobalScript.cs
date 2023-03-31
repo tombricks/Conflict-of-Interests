@@ -8,6 +8,7 @@ using System;
 using System.Linq;
 using UnityEditor;
 using Newtonsoft.Json;
+using MoonSharp.Interpreter;
 
 public class GlobalScript : MonoBehaviour
 {
@@ -22,12 +23,23 @@ public class GlobalScript : MonoBehaviour
     public Dictionary<string, Country> countries;
     public Dictionary<string, Decision> decisions;
     public Dictionary<string, EventGame> events;
+    ScriptLogic scriptLogic;
+    Script luaScript;
 
     void Start()
     {
         DefaultContext = new Context();
+        scriptLogic = new ScriptLogic();
+        luaScript = new Script();
+        UserData.RegisterType<ScriptLogic>();
+        luaScript.Globals["CoI"] = UserData.Create(scriptLogic);
+        luaScript.DoString(File.ReadAllText(Path.Combine(ContentDirectory, "core.lua")));
+
         // Sprite Generation
-        spriteImporter.Generate("star", Path.Combine(ContentDirectory, "star.png"));
+        Dictionary<string, string> imgs = JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(Path.Combine(ContentDirectory, "gfx.json")));
+        foreach(KeyValuePair<string, string> entry in imgs) {
+            spriteImporter.Generate(entry.Key, Path.Combine(ContentDirectory, entry.Value));
+        }
 
         // Game Config
         Dictionary<string, string> _configJSON = JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(Path.Combine(ContentDirectory, "config.json")));
@@ -71,7 +83,7 @@ public class GlobalScript : MonoBehaviour
             star.GetComponent<RectTransform>().sizeDelta = new Vector2( 16, 16 );
             star.GetComponent<RectTransform>().anchoredPosition = new Vector2( ( entry.Value[0] / mapData.size[0] ) * 1920, (entry.Value[1] / mapData.size[1] ) * -1080 );
             star.AddComponent<Image>();
-            star.GetComponent<Image>().sprite = spriteImporter["star"];
+            star.GetComponent<Image>().sprite = spriteImporter["Map-Star"];
             star.GetComponent<Image>().color = new Color32(255, 0, 0, 255);
             star.name = "Map_Star-"+tile;
         }
@@ -80,11 +92,12 @@ public class GlobalScript : MonoBehaviour
         Dictionary<string, string> countryData = JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(Path.Combine(ContentDirectory, "countries.json")));
         foreach (KeyValuePair<string, string> entry in countryData) {
             countries[entry.Key] = new Country(entry.Key);
-            spriteImporter.Generate("Flag-"+entry.Key, Path.Combine(ContentDirectory, $"GFX/flags/{entry.Key}.png"));
+            spriteImporter.Generate("Flag-"+entry.Key, Path.Combine(ContentDirectory, $"gfx/flags/{entry.Key}.png"));
         }
 
         foreach (KeyValuePair<string, string> entry in countryData) {
-            RunScript(JsonConvert.DeserializeObject<List<Effect>>(File.ReadAllText(Path.Combine(ContentDirectory, entry.Value))), new Context(new List<string>() {entry.Key}, where: "country history ("+entry.Key+"):"+entry.Value));
+            luaScript.Globals["scopes"] = new List<string>() { entry.Key };
+            luaScript.DoString(File.ReadAllText(Path.Combine(ContentDirectory, entry.Value)));
         }
 
         // Generating Decisions
@@ -107,14 +120,8 @@ public class GlobalScript : MonoBehaviour
         turns = -1;
         GameObject.Find("UI-Next-Turn-Button").GetComponent<Button>().onClick.AddListener(NextTurnButton);
 
-        // Generating Images
-        Dictionary<string, string> imgs = JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(Path.Combine(ContentDirectory, "gfx.json")));
-        foreach(KeyValuePair<string, string> entry in imgs) {
-            spriteImporter.Generate(entry.Key, Path.Combine(ContentDirectory, entry.Value));
-        }
-
         SetPlayerTag(_configJSON["starting_tag"]);
-        GenerateEvent("RUS_Reform_USSR_event");
+        //GenerateEvent("RUS_Reform_USSR_event");
         NextTurn(); // First turn = 0, -1 is the pre-game
     }
 
@@ -430,6 +437,43 @@ public class GlobalScript : MonoBehaviour
         else {
             return "unknown";
         }
+    }
+}
+
+[MoonSharpUserData]
+public class ScriptLogic {
+    GlobalScript globalScript;
+
+    public ScriptLogic() {
+        globalScript = GameObject.Find("GlobalScript").GetComponent<GlobalScript>();
+    }
+
+    public void SetColor(string country, string color) {
+        Color newCol;
+        if (ColorUtility.TryParseHtmlString(color, out newCol)) {
+            globalScript.countries[country].color = newCol;
+        }
+        globalScript.StyleAllTiles();
+    }
+
+    public void SetOwner(string country, string tile) {
+        globalScript.tiles[tile].SetOwner(country);
+    }
+
+    public void SetController(string country, string tile) {
+        globalScript.tiles[tile].SetController(country);
+    }
+
+    public void ClearDecisionTimeout(string country, string decision) {
+        globalScript.countries[country].decisionTimeouts.Remove(decision);
+    }
+
+    public bool OwnsTile(string country, string tile) {
+        return (globalScript.tiles[tile].owner == country);
+    }
+
+    public bool ControlsTile(string country, string tile) {
+        return (globalScript.tiles[tile].controller == country);
     }
 }
 public class Context {

@@ -9,6 +9,7 @@ using System.Linq;
 using UnityEditor;
 using Newtonsoft.Json;
 using MoonSharp.Interpreter;
+using MoonSharp.Interpreter.Interop;
 
 public class GlobalScript : MonoBehaviour
 {
@@ -21,7 +22,7 @@ public class GlobalScript : MonoBehaviour
     private Dictionary<string, string> _localisation;
     public Dictionary<string, Tile> tiles;
     public Dictionary<string, Country> countries;
-    public Dictionary<string, Decision> decisions;
+    public Dictionary<string, Table> decisions;
     public Dictionary<string, EventGame> events;
     ScriptLogic scriptLogic;
     Script luaScript;
@@ -101,12 +102,31 @@ public class GlobalScript : MonoBehaviour
         }
 
         // Generating Decisions
-        decisions = JsonConvert.DeserializeObject<Dictionary<string, Decision>>(File.ReadAllText(Path.Combine(ContentDirectory, "decisions.json")));
+        /* decisions = JsonConvert.DeserializeObject<Dictionary<string, Decision>>(File.ReadAllText(Path.Combine(ContentDirectory, "decisions.json")));
 
         foreach(KeyValuePair<string, Decision> entry in decisions ) {
             foreach(string country in countries.Keys) {
                 if (EvaluateScript(entry.Value.allowed, new Context(new List<string>() {country}, where: "decision:"+entry.Key+"/allowed")).output) {
                     countries[country].allowedDecisions.Add(entry.Key);
+                }
+            }
+        } */
+
+        decisions = new Dictionary<string, Table>() {};        
+        luaScript.DoString(File.ReadAllText(Path.Combine(ContentDirectory, "decisions.lua")));
+        Table decisionsTemp = luaScript.Globals.Get("decisions").Table;
+        foreach (object decisionObj in decisionsTemp.Values)
+        {
+            DynValue decisionDyn = DynValue.FromObject(luaScript, decisionObj);
+            Table decisionTable = decisionDyn.Table;
+            string decision = decisionTable.Get("id").String;
+            decisions[decision] = decisionTable;
+            foreach(string country in countries.Keys) {
+                luaScript.Globals["scopes"] = new List<string>() { country };
+                DynValue allowed = DynValue.FromObject(luaScript, decisionTable["allowed"]);
+                bool isAllowed = allowed.Function.Call().Boolean;
+                if (isAllowed) {
+                    countries[country].allowedDecisions.Add(decision);
                 }
             }
         }
@@ -116,6 +136,10 @@ public class GlobalScript : MonoBehaviour
 
         // foreach(KeyValuePair<string, EventGame> entry in events ) {
         // }
+
+        GameObject.Find("UI-Console-Button").GetComponent<Button>().onClick.AddListener(() => {
+            luaScript.DoString(GameObject.Find("UI-Console").GetComponent<TMP_InputField>().text);
+        });
 
         turns = -1;
         GameObject.Find("UI-Next-Turn-Button").GetComponent<Button>().onClick.AddListener(NextTurnButton);
@@ -189,7 +213,7 @@ public class GlobalScript : MonoBehaviour
 
     public void DoDecision(string decision, string tag) {
         if (countries[tag].availableDecisions.Contains(decision)) {
-            RunScript(decisions[decision].effects, new Context(new List<string>() {tag}, where: "decision:"+decision+"/effects"));
+            /* RunScript(decisions[decision].effects, new Context(new List<string>() {tag}, where: "decision:"+decision+"/effects"));
             if (decisions[decision].fire_only_once) {
                 countries[tag].allowedDecisions.Remove(decision);
             }
@@ -197,18 +221,49 @@ public class GlobalScript : MonoBehaviour
                 if (decisions[decision].timeout > 0) {
                     countries[tag].decisionTimeouts[decision] = decisions[decision].timeout;
                 }
+            } */
+            Table decisionTable = decisions[decision];
+            Closure effects = (Closure)decisionTable["effects"];
+            effects.Call();
+
+            if ((bool)decisionTable["fire_only_once"]) {
+                countries[tag].allowedDecisions.Remove(decision);
+            }
+            else {
+                int timeout = Convert.ToInt32((decisionTable["timeout"]));
+                if ( timeout > 0 ) {
+                    countries[tag].decisionTimeouts[decision] = timeout;
+                }
             }
         }
         GenerateContent();
     }
 
     public void CheckDecisions(string country) {
+        /* foreach (DynValue decisionDyn in decisions.Values)
+        {
+            Table decisionTable = decisionDyn.Table;
+            string decision = decisionTable.Get("id").String;
+            foreach(string country in countries.Keys) {
+                if (decisionTable["allowed"].Call().Boolean) {
+                    countries[country].allowedDecisions.Add(decision);
+                }
+            }
+        } */
+
         countries[country].visibleDecisions = new List<string>() {};
         countries[country].availableDecisions = new List<string>() {};
         foreach(string decision in countries[country].allowedDecisions ) {
-            if (EvaluateScript(decisions[decision].visible, new Context(new List<string>() {country}, where: "decision:"+decision+"/visible")).output && !countries[country].decisionTimeouts.ContainsKey(decision)) {
+            Table decisionTable = decisions[decision];
+            DynValue visible = DynValue.FromObject(luaScript, decisionTable["visible"]);
+            luaScript.Globals["scopes"] = new List<string>() { country };
+            bool isVisible = visible.Function.Call().Boolean;
+            if (isVisible && !countries[country].decisionTimeouts.ContainsKey(decision)) {
+                DynValue available = DynValue.FromObject(luaScript, decisionTable["available"]);
+                luaScript.Globals["scopes"] = new List<string>() { country };
+                bool isAvailable = available.Function.Call().Boolean;
                 countries[country].visibleDecisions.Add(decision);
-                if (EvaluateScript(decisions[decision].available, new Context(new List<string>() {country}, where: "decision:"+decision+"/available")).output) {
+                if (isAvailable) {
                     countries[country].availableDecisions.Add(decision);
                 }
             }
@@ -446,6 +501,10 @@ public class ScriptLogic {
 
     public ScriptLogic() {
         globalScript = GameObject.Find("GlobalScript").GetComponent<GlobalScript>();
+    }
+
+    public void Log(string text) {
+        Debug.Log($"Game: {text}");
     }
 
     public void SetColor(string country, string color) {
